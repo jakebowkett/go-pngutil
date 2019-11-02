@@ -39,6 +39,16 @@ var (
 	itxtKWGap = []byte{0x00, 0x00, 0x00, 0x00, 0x00}
 )
 
+/*
+Assert returns an error if r doesn't represent
+a valid PNG image. It checks for the header, the
+first 8 bytes of the IHDR chunk, and the IEND
+chunk without reading the entire file.
+
+If the current offset of rs is important to the
+caller it should be stored somewhere as Assert
+does not attempt to restore the original offset.
+*/
 func Assert(rs io.ReadSeeker) (err error) {
 
 	if _, err := rs.Seek(0, io.SeekStart); err != nil {
@@ -215,6 +225,14 @@ func ReplaceMeta(rs io.ReadSeeker, metadata Metadata) (r io.Reader, err error) {
 	return io.MultiReader(readers...), nil
 }
 
+/*
+skipReader represents a view into a larger reader. It starts at
+offset and ends at limit. Once it has read up to limit the Read
+method returns an io.EOF error.
+
+In this package all instances of skipReader use the same underlying
+reader pass in to ReplaceMeta.
+*/
 type skipReader struct {
 	r      io.ReadSeeker
 	offset int64
@@ -269,6 +287,14 @@ func closeFile(c io.Closer, err *error) {
 	*err = fmt.Errorf("%w: %v", *err, cErr)
 }
 
+/*
+WriteFile drains r and writes it to a new file
+at name, returning the number of bytes it wrote
+and an error, if any.
+
+If name doesn't already end in ".png" WriteFile
+will add it to the end.
+*/
 func WriteFile(name string, r io.Reader) (n int64, err error) {
 
 	if ext := filepath.Ext(name); ext != ".png" {
