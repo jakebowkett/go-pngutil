@@ -194,24 +194,26 @@ func ReplaceMeta(rs io.ReadSeeker, metadata Metadata) (r io.Reader, err error) {
 		*/
 		chunk := string(p[4:8])
 		if !retain[chunk] {
-			if activeReader {
-				activeReader = false
-				last := len(readers) - 1
-				sr, ok := readers[last].(*skipReader)
-				if !ok {
-					goto skip
-				}
-				if sr.offset == pos {
-					readers = readers[0:last]
-				} else {
-					sr.limit = pos
-				}
+			if !activeReader {
+				goto skip
+			}
+			activeReader = false
+			last := len(readers) - 1
+			sr, ok := readers[last].(*skipReader)
+			if !ok {
+				goto skip
+			}
+			if sr.offset == pos {
+				readers = readers[0:last]
+			} else {
+				sr.limit = pos
 			}
 		} else {
-			if !activeReader {
-				activeReader = true
-				readers = append(readers, &skipReader{r: rs, offset: pos})
+			if activeReader {
+				goto skip
 			}
+			activeReader = true
+			readers = append(readers, &skipReader{r: rs, offset: pos})
 		}
 
 	skip:
