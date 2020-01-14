@@ -149,9 +149,9 @@ func ReplaceMeta(rs io.ReadSeeker, metadata Metadata) (r io.Reader, err error) {
 		length := uint32(i - (start + 8))       // calculate length
 		int32ToBytes(bb[start:start+4], length) // add length
 		crc := crc32.NewIEEE()
-		crc.Write(bb[start+4:])           // input chunk type + data
-		int32ToBytes(bb[i:], crc.Sum32()) // calculate CRC
-		i += 4                            // add CRC length
+		crc.Write(bb[start+4 : start+8+int(length)]) // input chunk type + data
+		int32ToBytes(bb[i:], crc.Sum32())            // calculate CRC
+		i += 4                                       // add CRC length
 	}
 
 	// Alias scratch space at the end of the metadata buffer.
@@ -233,7 +233,7 @@ offset and ends at limit. Once it has read up to limit the Read
 method returns an io.EOF error.
 
 In this package all instances of skipReader use the same underlying
-reader pass in to ReplaceMeta.
+reader passed to ReplaceMeta.
 */
 type skipReader struct {
 	r      io.ReadSeeker
@@ -306,12 +306,12 @@ func WriteFile(name string, r io.Reader) (n int64, err error) {
 
 	name, err = filepath.Abs(name)
 	if err != nil {
-		return n, err
+		return n, fmt.Errorf("pngutil: %w", err)
 	}
 
 	f, err := os.Create(name)
 	if err != nil {
-		return n, err
+		return n, fmt.Errorf("pngutil: %w", err)
 	}
 	defer closeFile(f, &err)
 
@@ -325,7 +325,7 @@ func WriteFile(name string, r io.Reader) (n int64, err error) {
 			break
 		}
 		if err != nil {
-			return n, err
+			return n, fmt.Errorf("pngutil: %w", err)
 		}
 	}
 
