@@ -60,7 +60,7 @@ func Assert(rs io.ReadSeeker) (err error) {
 	}
 	defer func() {
 		if _, sErr := rs.Seek(offset, io.SeekStart); sErr != nil {
-			err = fmt.Errorf("jpegutil: %w: %s", err, sErr.Error())
+			err = fmt.Errorf("pngutil: %w: %s", err, sErr.Error())
 		}
 	}()
 
@@ -112,26 +112,26 @@ const (
 type Metadata map[string]string
 
 /*
-ReplaceMeta takes a PNG file represented by rs and returns
-a reader r which is the same file with only the supplied
-metadata. The resulting image represented by r is not altered.
+ReplaceMeta takes a PNG file represented by f and returns
+a readseeker mrs which is the same file with only the supplied
+metadata. The resulting image represented by mrs is not altered.
 
-A zero-length metadata will result in r having no metadata at all.
+A zero-length metadata will result in mrs having no metadata at all.
 
 ReplaceMeta calls Assert and will error under the same conditions.
 It is unnecessary for callers to call Assert if they intend to
 immediately follow with ReplaceMeta.
 
-Since r is a wrapper around the new metadata and rs, altering
-rs will affect r. Therefore callers are recommended to drain
-r before altering rs.
+Since mrs is a wrapper around the new metadata and f, altering
+f will affect mrs. Therefore callers are recommended to drain
+mrs before altering f.
 
 The metadata is assigned to an iTXt chunk at the start of the
 file.
 */
-func ReplaceMeta(rs io.ReadSeeker, metadata Metadata) (r io.Reader, err error) {
+func ReplaceMeta(f io.ReadSeeker, metadata Metadata) (mrs *multiReadSeeker, err error) {
 
-	if err = Assert(rs); err != nil {
+	if err = Assert(f); err != nil {
 		return nil, err
 	}
 
@@ -171,21 +171,28 @@ func ReplaceMeta(rs io.ReadSeeker, metadata Metadata) (r io.Reader, err error) {
 	p := bb[i:]
 
 	// Seek to end of IHDR chunk (PNG 8 byte header, 13 byte IHDR chunk)
-	if _, err = rs.Seek(ihdrEnd, io.SeekStart); err != nil {
+	if _, err = f.Seek(ihdrEnd, io.SeekStart); err != nil {
 		return nil, err
 	}
-	readers := []io.Reader{
-		&skipReader{r: rs, offset: 0, limit: ihdrEnd},
-		bytes.NewReader(bb[0 : len(bb)-8]),
-		&skipReader{r: rs, offset: ihdrEnd},
+	readers := []*skipReadSeeker{
+		&skipReadSeeker{
+			name: "header",
+			rs:   f,
+			end:  ihdrEnd,
+		},
+		&skipReadSeeker{
+			name: "metadata",
+			rs:   bytes.NewReader(bb[:len(bb)-8]),
+			end:  int64(len(bb) - 8),
+		},
 	}
 	pos := ihdrEnd
-	activeReader := true
+	keptPrevChunk := false
 
 	for {
 
 		// Read next 8 bytes.
-		n, err := rs.Read(p)
+		n, err := f.Read(p)
 		if errors.Is(err, io.EOF) {
 			break
 		}
@@ -198,85 +205,36 @@ func ReplaceMeta(rs io.ReadSeeker, metadata Metadata) (r io.Reader, err error) {
 
 		length := int64(binary.BigEndian.Uint32(p[0:4])) + 4 // add 4 for CRC
 
-		/*
-			If the upcoming chunk isn't of a type we want to retain
-			we mark this as the limit of the current reader. If we
-			do want to retain the current chunk we either do nothing
-			if there's already a reader for it or add one if there
-			isn't.
-		*/
+		// Discard chunk.
 		chunk := string(p[4:8])
 		if !retain[chunk] {
-			if !activeReader {
-				goto skip
-			}
-			activeReader = false
-			last := len(readers) - 1
-			sr, ok := readers[last].(*skipReader)
-			if !ok {
-				goto skip
-			}
-			if sr.offset == pos {
-				readers = readers[0:last]
-			} else {
-				sr.limit = pos
-			}
-		} else {
-			if activeReader {
-				goto skip
-			}
-			activeReader = true
-			readers = append(readers, &skipReader{r: rs, offset: pos})
+			keptPrevChunk = false
+			goto skip
 		}
 
+		// Concat this chunk to the previous.
+		if keptPrevChunk {
+			last := len(readers) - 1
+			readers[last].end = pos
+		} else { // Otherwise add new chunk.
+			readers = append(readers, &skipReadSeeker{
+				name:  "chunk",
+				rs:    f,
+				start: pos,
+				end:   pos + length,
+			})
+		}
+		keptPrevChunk = true
+
 	skip:
-		if pos, err = rs.Seek(length, io.SeekCurrent); err != nil {
+		if pos, err = f.Seek(length, io.SeekCurrent); err != nil {
 			return nil, err
 		}
 	}
 
-	readers[len(readers)-1].(*skipReader).limit = pos
+	readers[len(readers)-1].end = pos
 
-	return io.MultiReader(readers...), nil
-}
-
-/*
-skipReader represents a view into a larger reader. It starts at
-offset and ends at limit. Once it has read up to limit the Read
-method returns an io.EOF error.
-
-In this package all instances of skipReader use the same underlying
-reader passed to ReplaceMeta.
-*/
-type skipReader struct {
-	r      io.ReadSeeker
-	offset int64
-	limit  int64
-	begun  bool
-}
-
-func (sr *skipReader) Read(p []byte) (n int, err error) {
-
-	switch {
-
-	// Seek to start of offset if this is the first time
-	// read was called on this skipReader.
-	case !sr.begun:
-		sr.begun = true
-		if _, err = sr.r.Seek(sr.offset, io.SeekStart); err != nil {
-			return 0, err
-		}
-	case sr.offset >= sr.limit:
-		return 0, io.EOF
-	}
-
-	// Make sure we don't go over the limit.
-	if max := sr.limit - sr.offset; int64(len(p)) > max {
-		p = p[0:max]
-	}
-	n, err = sr.r.Read(p)
-	sr.offset += int64(n)
-	return n, err
+	return newMultiReadSeeker(readers...)
 }
 
 var retain = map[string]bool{
